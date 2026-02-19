@@ -13,8 +13,6 @@ let annotationWriter: AnnotationWriter;
 let statusBar: StatusBarManager;
 
 export function activate(ctx: vscode.ExtensionContext): void {
-  console.log('[AI Annotator] Activating…');
-
   const config = getConfig();
   const employeeId = readEmployeeId(config.envFileName) ?? 'UNKNOWN';
 
@@ -25,18 +23,36 @@ export function activate(ctx: vscode.ExtensionContext): void {
   statusBar = new StatusBarManager();
   statusBar.setEnabled(config.enabled);
 
+  const log = detectionEngine.getLog();
+  log.appendLine(`[STARTUP] Employee: ${employeeId}, MinChars: ${config.minCharsForDetection}`);
+
   // Wire: detection → annotation
   detectionEngine.onResult(async (result) => {
     try {
       await annotationWriter.annotate(result);
       statusBar.flashAnnotation();
     } catch (err) {
-      console.error('[AI Annotator] Annotation failed:', err);
+      log.appendLine(`[ERROR] Annotation failed: ${err}`);
     }
   });
 
-  // Start listening
+  // ── Primary: Listen to text document changes ─────────────
   eventListener = new EventListener(detectionEngine);
+
+  // ── Fallback: File system watcher ────────────────────────
+  // Copilot Chat "auto-apply" may write files directly without
+  // triggering onDidChangeTextDocument. This catches that.
+  const fileWatcherDisposables = createFileWatchers(detectionEngine, log);
+
+  // ── Also catch document save (Copilot might save after apply) ──
+  const saveWatcher = vscode.workspace.onDidSaveTextDocument((doc) => {
+    if (doc.uri.scheme !== 'file') { return; }
+    log.appendLine(`[SAVE] file="${doc.fileName}"`);
+    // Re-process as file change after a short delay
+    setTimeout(() => {
+      detectionEngine.processFileChange(doc.uri);
+    }, 300);
+  });
 
   // ── Commands ─────────────────────────────────────────────
   const toggleCmd = vscode.commands.registerCommand('aiAnnotator.toggle', () => {
@@ -57,17 +73,28 @@ export function activate(ctx: vscode.ExtensionContext): void {
     );
   });
 
+  // Force-annotate command for testing
+  const forceCmd = vscode.commands.registerCommand('aiAnnotator.forceAnnotate', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showWarningMessage('No active editor');
+      return;
+    }
+    log.appendLine(`[FORCE] Manual annotation triggered`);
+    detectionEngine.processFileChange(editor.document.uri);
+  });
+
   // ── React to config changes ──────────────────────────────
   const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (!e.affectsConfiguration('aiAnnotator')) { return; }
     const newCfg = getConfig();
     detectionEngine.updateConfig(newCfg);
     statusBar.setEnabled(newCfg.enabled);
-    console.log('[AI Annotator] Configuration updated');
+    log.appendLine('[CONFIG] Configuration updated');
   });
 
   // ── Watch .env for changes ───────────────────────────────
-  const envDisposables = createEnvWatcher(config.envFileName);
+  const envDisposables = createEnvWatcher(config.envFileName, log);
 
   // ── Cleanup on document close ────────────────────────────
   const docCloseWatcher = vscode.workspace.onDidCloseTextDocument((doc) => {
@@ -81,23 +108,92 @@ export function activate(ctx: vscode.ExtensionContext): void {
     statusBar,
     toggleCmd,
     statusCmd,
+    forceCmd,
     configWatcher,
+    saveWatcher,
     docCloseWatcher,
     ...envDisposables,
+    ...fileWatcherDisposables,
   );
 
-  console.log(
-    `[AI Annotator] Active — Employee: ${employeeId}, ` +
-    `MinChars: ${config.minCharsForDetection}`
-  );
-  vscode.window.showInformationMessage('AI Annotator is active');
+  log.appendLine('[STARTUP] AI Annotator fully activated');
+  vscode.window.showInformationMessage(`AI Annotator active — Employee: ${employeeId}`);
 }
 
 export function deactivate(): void {
   console.log('[AI Annotator] Deactivated');
 }
 
-function createEnvWatcher(envFileName: string): vscode.Disposable[] {
+/**
+ * Creates filesystem watchers for common code file extensions.
+ * This is the fallback that catches Copilot Chat auto-apply.
+ */
+function createFileWatchers(
+  engine: DetectionEngine,
+  log: vscode.OutputChannel,
+): vscode.Disposable[] {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) { return []; }
+
+  const disposables: vscode.Disposable[] = [];
+
+  // Watch common code file types
+  const patterns = [
+    '**/*.{js,ts,jsx,tsx}',
+    '**/*.{py,rb,go,rs,java,kt,swift}',
+    '**/*.{c,cpp,h,hpp,cs}',
+    '**/*.{html,css,scss,less}',
+    '**/*.{sql,sh,bash,ps1}',
+    '**/*.{yaml,yml,json,xml}',
+  ];
+
+  for (const glob of patterns) {
+    const pattern = new vscode.RelativePattern(folder, glob);
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+    // Debounce: track recently processed files
+    const recent = new Map<string, number>();
+
+    const handleFile = (uri: vscode.Uri) => {
+      const key = uri.toString();
+      const now = Date.now();
+      const last = recent.get(key) ?? 0;
+
+      // Skip if processed within last 2 seconds
+      if (now - last < 2000) { return; }
+      recent.set(key, now);
+
+      // Skip .env, node_modules, etc.
+      const path = uri.fsPath;
+      if (path.includes('node_modules') ||
+          path.includes('.git') ||
+          path.endsWith('.env')) {
+        return;
+      }
+
+      log.appendLine(`[FS_WATCH] File changed: ${uri.fsPath}`);
+
+      // Delay to let VS Code finish writing
+      setTimeout(() => {
+        engine.processFileChange(uri);
+      }, 500);
+    };
+
+    disposables.push(
+      watcher,
+      watcher.onDidChange(handleFile),
+      watcher.onDidCreate(handleFile),
+    );
+  }
+
+  log.appendLine(`[STARTUP] File watchers active for ${patterns.length} patterns`);
+  return disposables;
+}
+
+function createEnvWatcher(
+  envFileName: string,
+  log: vscode.OutputChannel,
+): vscode.Disposable[] {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) { return []; }
 
@@ -107,7 +203,7 @@ function createEnvWatcher(envFileName: string): vscode.Disposable[] {
   const reload = () => {
     const id = readEmployeeId(envFileName) ?? 'UNKNOWN';
     annotationWriter.setEmployeeId(id);
-    console.log(`[AI Annotator] .env reloaded — Employee: ${id}`);
+    log.appendLine(`[ENV] Reloaded — Employee: ${id}`);
   };
 
   return [watcher, watcher.onDidChange(reload), watcher.onDidCreate(reload)];

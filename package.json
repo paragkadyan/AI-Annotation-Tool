@@ -19,6 +19,10 @@
       {
         "command": "aiAnnotator.status",
         "title": "AI Annotator: Show Status"
+      },
+      {
+        "command": "aiAnnotator.forceAnnotate",
+        "title": "AI Annotator: Force Annotate Current File"
       }
     ],
     "keybindings": [

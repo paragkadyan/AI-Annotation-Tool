@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import { DetectionEngine } from './detectionEngine';
 
 /**
- * Thin listener layer. Simply forwards every content change to the engine.
- * All filtering and classification logic lives in DetectionEngine.
+ * Passes ALL document change events to the engine without filtering.
+ * The engine decides what to skip and what to classify.
  */
 export class EventListener implements vscode.Disposable {
   private disposable: vscode.Disposable;
@@ -11,7 +11,11 @@ export class EventListener implements vscode.Disposable {
   constructor(private readonly engine: DetectionEngine) {
     this.disposable = vscode.workspace.onDidChangeTextDocument((e) => {
       for (const change of e.contentChanges) {
-        this.engine.processChange(e.document, change);
+        try {
+          this.engine.processChange(e.document, change);
+        } catch (err) {
+          console.error('[AI Annotator] Error processing change:', err);
+        }
       }
     });
   }
