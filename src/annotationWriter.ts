@@ -8,16 +8,6 @@ import {
 } from './annotationBuilder';
 import { DetectionEngine } from './detectionEngine';
 
-/**
- * Wraps AI-generated code with start/end markers.
- * Supports MULTIPLE annotated blocks per file.
- *
- * Strategy:
- *  - Snapshots track "known" file content
- *  - Diff finds NEW lines not present in snapshot
- *  - Checks if those specific new lines are already inside an annotation block
- *  - Only annotates truly unannotated new code
- */
 export class AnnotationWriter {
   private readonly locks = new Map<string, Promise<void>>();
   private readonly cooldowns = new Map<string, number>();
@@ -33,9 +23,7 @@ export class AnnotationWriter {
     this.log = engine.getLog();
   }
 
-  public setEmployeeId(id: string): void {
-    this.employeeId = id;
-  }
+  public setEmployeeId(id: string): void { this.employeeId = id; }
 
   public takeSnapshot(uri: string, content: string): void {
     this.snapshots.set(uri, content);
@@ -51,7 +39,7 @@ export class AnnotationWriter {
     const key = realUri.toString();
     const last = this.cooldowns.get(key) ?? 0;
     if (Date.now() - last < AnnotationWriter.COOLDOWN_MS) {
-      this.log?.appendLine(`[WRITER] Cooldown active, skipping`);
+      this.log?.appendLine(`[WRITER] Cooldown, skipping`);
       return;
     }
 
@@ -73,10 +61,9 @@ export class AnnotationWriter {
       this.log?.appendLine(`[WRITER] Cannot open: ${e}`);
       return;
     }
-
     if (doc.isClosed) { return; }
 
-    // ── Find what's new ──
+    // ── Find the new code range ──
     const oldText = this.snapshots.get(key) ?? '';
     const { startLine, endLine } = this.findNewCodeRange(doc, oldText, result.text);
 
@@ -86,12 +73,15 @@ export class AnnotationWriter {
     }
 
     this.log?.appendLine(
-      `[WRITER] New code at lines ${startLine}-${endLine} in ${realUri.fsPath}`
+      `[WRITER] New code lines ${startLine}-${endLine} in ${realUri.fsPath}`
     );
 
-    // ── Check if THIS SPECIFIC range is already inside an annotation block ──
-    if (this.isRangeAnnotated(doc, startLine, endLine)) {
-      this.log?.appendLine(`[WRITER] This range is already annotated, skipping`);
+    // ── Check if this EXACT range is INSIDE an existing annotation block ──
+    const blockStatus = this.getAnnotationStatus(doc, startLine, endLine);
+    this.log?.appendLine(`[WRITER] Annotation status: ${blockStatus}`);
+
+    if (blockStatus === 'inside') {
+      this.log?.appendLine(`[WRITER] Code is inside existing annotation block, skipping`);
       return;
     }
 
@@ -110,22 +100,20 @@ export class AnnotationWriter {
       });
 
       const success = await editor.edit((eb) => {
-        // Insert END first (doesn't shift startLine)
+        // END first (doesn't shift startLine)
         if (endLine < doc.lineCount) {
           eb.insert(new vscode.Position(endLine, 0), endBlock);
         } else {
           const lastLine = doc.lineAt(doc.lineCount - 1);
           eb.insert(lastLine.range.end, '\n' + endBlock);
         }
-
-        // Insert START
+        // START
         eb.insert(new vscode.Position(startLine, 0), startBlock);
       });
 
       if (success) {
         this.cooldowns.set(key, Date.now());
         await doc.save();
-        // Update snapshot to include the annotated code
         this.snapshots.set(key, doc.getText());
         this.log?.appendLine(`[WRITER] ✅ Wrapped lines ${startLine}-${endLine}`);
       } else {
@@ -140,50 +128,60 @@ export class AnnotationWriter {
   }
 
   /**
-   * Checks if a specific line range is already inside an annotation block.
-   * An annotation block is defined as lines between AI_ASSISTED: true and AI_ASSISTED_END.
+   * Determines if a line range is:
+   *  - 'inside'  → entirely within an existing START...END block → skip
+   *  - 'outside' → not inside any block → annotate
+   *
+   * Logic: Walk through the file tracking open/close blocks.
+   * A block is open after seeing ANNOTATION_MARKER and closed after
+   * seeing ANNOTATION_END_MARKER. If startLine..endLine falls entirely
+   * within an open block, it's 'inside'.
    */
-  private isRangeAnnotated(doc: vscode.TextDocument, startLine: number, endLine: number): boolean {
-    // Find all annotation blocks in the file
-    const blocks: Array<{ start: number; end: number }> = [];
-    let blockStart = -1;
+  private getAnnotationStatus(
+    doc: vscode.TextDocument,
+    startLine: number,
+    endLine: number,
+  ): 'inside' | 'outside' {
+    let insideBlock = false;
+    let newCodeStartsInBlock = false;
+    let newCodeEndsInBlock = false;
 
     for (let i = 0; i < doc.lineCount; i++) {
-      const text = doc.lineAt(i).text;
-      if (text.includes(ANNOTATION_MARKER) && blockStart === -1) {
-        blockStart = i;
-      } else if (text.includes(ANNOTATION_END_MARKER) && blockStart !== -1) {
-        blocks.push({ start: blockStart, end: i });
-        blockStart = -1;
+      const lineText = doc.lineAt(i).text;
+
+      if (lineText.includes(ANNOTATION_MARKER) && !lineText.includes(ANNOTATION_END_MARKER)) {
+        insideBlock = true;
+      }
+
+      if (i === startLine) {
+        newCodeStartsInBlock = insideBlock;
+      }
+      if (i === endLine - 1) {
+        newCodeEndsInBlock = insideBlock;
+      }
+
+      if (lineText.includes(ANNOTATION_END_MARKER)) {
+        insideBlock = false;
       }
     }
 
-    // Check if the new code range falls entirely within any existing block
-    for (const block of blocks) {
-      if (startLine >= block.start && endLine <= block.end + 1) {
-        return true;
-      }
+    // Only skip if the ENTIRE range is inside a block
+    if (newCodeStartsInBlock && newCodeEndsInBlock) {
+      return 'inside';
     }
 
-    // Also check if annotation markers are immediately adjacent (within 2 lines)
-    for (let i = Math.max(0, startLine - 4); i <= Math.min(doc.lineCount - 1, startLine); i++) {
-      if (doc.lineAt(i).text.includes(ANNOTATION_MARKER)) {
-        return true;
-      }
-    }
-
-    return false;
+    return 'outside';
   }
 
   /**
-   * Finds the range of NEW lines by diffing snapshot vs current content.
+   * Finds NEW lines by diffing snapshot vs current file content.
    */
   private findNewCodeRange(
     doc: vscode.TextDocument,
     oldText: string,
     insertedText: string,
   ): { startLine: number; endLine: number } {
-    // ── Case 1: File was empty → everything is new ──
+    // ── File was empty → everything is new ──
     if (oldText.trim().length === 0) {
       return { startLine: 0, endLine: doc.lineCount };
     }
@@ -195,91 +193,75 @@ export class AnnotationWriter {
 
     const oldLines = oldText.split('\n');
 
-    // Build a set of old lines (trimmed) with their count for handling duplicates
-    const oldLineCounts = new Map<string, number>();
+    // Count occurrences of each line in old file
+    const oldCounts = new Map<string, number>();
     for (const l of oldLines) {
       const t = l.trim();
       if (t.length === 0) { continue; }
-      oldLineCounts.set(t, (oldLineCounts.get(t) ?? 0) + 1);
+      // Skip annotation lines in old content
+      if (t.includes(ANNOTATION_MARKER) || t.includes(ANNOTATION_END_MARKER)) { continue; }
+      oldCounts.set(t, (oldCounts.get(t) ?? 0) + 1);
     }
 
-    // Find contiguous block of new lines
-    const usedOld = new Map<string, number>();
+    // Find lines in current file that aren't in old file
+    const usedCounts = new Map<string, number>();
     let firstNew = -1;
     let lastNew = -1;
 
     for (let i = 0; i < currentLines.length; i++) {
-      const trimmed = currentLines[i].trim();
-      if (trimmed.length === 0) { continue; }
+      const t = currentLines[i].trim();
+      if (t.length === 0) { continue; }
+      // Skip annotation lines
+      if (t.includes(ANNOTATION_MARKER) || t.includes(ANNOTATION_END_MARKER)) { continue; }
 
-      // Skip annotation markers
-      if (trimmed.includes(ANNOTATION_MARKER) || trimmed.includes(ANNOTATION_END_MARKER)) {
-        continue;
-      }
+      const oldCount = oldCounts.get(t) ?? 0;
+      const used = usedCounts.get(t) ?? 0;
 
-      const oldCount = oldLineCounts.get(trimmed) ?? 0;
-      const usedCount = usedOld.get(trimmed) ?? 0;
-
-      if (usedCount < oldCount) {
-        // This line existed in old file
-        usedOld.set(trimmed, usedCount + 1);
+      if (used < oldCount) {
+        usedCounts.set(t, used + 1);
       } else {
-        // This line is NEW
+        // NEW line
         if (firstNew === -1) { firstNew = i; }
         lastNew = i;
       }
     }
 
-    if (firstNew === -1) {
-      // Fallback: try matching inserted text directly
-      return this.findByInsertedText(currentLines, insertedText);
+    if (firstNew !== -1) {
+      return { startLine: firstNew, endLine: lastNew + 1 };
     }
 
-    return { startLine: firstNew, endLine: lastNew + 1 };
+    // Fallback: match inserted text
+    return this.findByInsertedText(currentLines, insertedText);
   }
 
-  /**
-   * Fallback: find the inserted text in the current file by matching
-   * its first and last non-empty lines.
-   */
   private findByInsertedText(
     currentLines: string[],
     insertedText: string,
   ): { startLine: number; endLine: number } {
-    const insertedLines = insertedText.split('\n').filter(l => l.trim().length > 0);
-    if (insertedLines.length === 0) {
-      return { startLine: 0, endLine: 0 };
-    }
+    const iLines = insertedText.split('\n').filter(l => l.trim().length > 0);
+    if (iLines.length === 0) { return { startLine: 0, endLine: 0 }; }
 
-    const first = insertedLines[0].trim();
-    const last = insertedLines[insertedLines.length - 1].trim();
+    const first = iLines[0].trim();
+    const last = iLines[iLines.length - 1].trim();
+    let start = -1;
 
-    let startLine = -1;
     for (let i = 0; i < currentLines.length; i++) {
-      if (currentLines[i].trim() === first) {
-        startLine = i;
-        break;
-      }
+      if (currentLines[i].trim() === first) { start = i; break; }
+    }
+    if (start === -1) { return { startLine: 0, endLine: 0 }; }
+
+    let end = start + iLines.length;
+    for (let i = currentLines.length - 1; i >= start; i--) {
+      if (currentLines[i].trim() === last) { end = i + 1; break; }
     }
 
-    if (startLine === -1) { return { startLine: 0, endLine: 0 }; }
-
-    let endLine = startLine + insertedLines.length;
-    for (let i = currentLines.length - 1; i >= startLine; i--) {
-      if (currentLines[i].trim() === last) {
-        endLine = i + 1;
-        break;
-      }
-    }
-
-    return { startLine, endLine };
+    return { startLine: start, endLine: end };
   }
 
   private resolveRealFile(doc: vscode.TextDocument): vscode.Uri | null {
     if (doc.uri.scheme === 'file' || doc.uri.scheme === 'untitled') {
       return doc.uri;
     }
-
     const fsPath = doc.fileName;
     if (fsPath && fsPath !== '' && !fsPath.includes('extension-output')) {
       try { return vscode.Uri.file(fsPath); }

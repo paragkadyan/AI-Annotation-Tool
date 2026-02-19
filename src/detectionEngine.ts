@@ -173,22 +173,12 @@ export class DetectionEngine {
       const trimmed = text.trim();
 
       if (trimmed.length < this.config.minCharsForDetection) { return; }
-      if (text.includes(ANNOTATION_MARKER)) {
-        // Check if there's unannotated code AFTER the last AI_ASSISTED_END
-        const lastEnd = text.lastIndexOf(ANNOTATION_END_MARKER);
-        const afterEnd = text.substring(lastEnd + ANNOTATION_END_MARKER.length).trim();
-        if (afterEnd.length < 20) { return; }
-
-        this.log.appendLine(`[FILE_CHANGE] Found unannotated code after last AI_ASSISTED_END`);
-        this.emitResult(doc, 0, afterEnd, 'File watcher: unannotated code after last block');
-        return;
-      }
 
       const lineCount = this.countLines(text);
       if (lineCount < 3) { return; }
 
-      this.log.appendLine(`[FILE_CHANGE] ${this.shortName(doc)} — ${lineCount} lines unannotated`);
-      this.emitResult(doc, 0, text, `File watcher: ${lineCount} lines unannotated`);
+      this.log.appendLine(`[FILE_CHANGE] ${this.shortName(doc)} — ${lineCount} lines`);
+      this.emitResult(doc, 0, text, `File watcher: ${lineCount} lines`);
     } catch (_e: unknown) { /* file deleted */ }
   }
 
