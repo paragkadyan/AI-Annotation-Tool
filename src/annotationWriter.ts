@@ -4,22 +4,26 @@ import {
   buildAnnotationStart,
   buildAnnotationEnd,
   ANNOTATION_MARKER,
+  ANNOTATION_END_MARKER,
 } from './annotationBuilder';
 import { DetectionEngine } from './detectionEngine';
 
 /**
- * Wraps AI-generated code with start and end annotation markers.
+ * Annotates only the NEW code added by AI, not the entire file.
  *
- * NO session-level caching — always checks actual file content
- * to decide whether annotation is needed. This means if the user
- * deletes an annotation, the next AI insert will be annotated again.
+ * Strategy:
+ *  - Maintains snapshots of file content before AI edits
+ *  - Diffs the snapshot vs current content to find new lines
+ *  - Wraps only the new lines with start/end markers
  */
 export class AnnotationWriter {
   private readonly locks = new Map<string, Promise<void>>();
+  private readonly cooldowns = new Map<string, number>();
   private log: vscode.OutputChannel | null = null;
 
-  /** Cooldown: don't annotate same file within N ms */
-  private readonly cooldowns = new Map<string, number>();
+  /** Stores the last known "clean" content of each file (before AI edit). */
+  private readonly snapshots = new Map<string, string>();
+
   private static readonly COOLDOWN_MS = 2000;
 
   constructor(
@@ -33,6 +37,18 @@ export class AnnotationWriter {
     this.employeeId = id;
   }
 
+  /**
+   * Call this to snapshot a file's current content.
+   * Should be called periodically for active files so we know
+   * what the file looked like before AI made changes.
+   */
+  public takeSnapshot(uri: string, content: string): void {
+    // Don't snapshot if it already contains our markers (avoid snapshot after annotation)
+    if (!content.includes(ANNOTATION_MARKER)) {
+      this.snapshots.set(uri, content);
+    }
+  }
+
   public async annotate(result: DetectionResult): Promise<void> {
     const realUri = this.resolveRealFile(result.document);
     if (!realUri) {
@@ -42,10 +58,10 @@ export class AnnotationWriter {
 
     const key = realUri.toString();
 
-    // Cooldown check
-    const lastWrite = this.cooldowns.get(key) ?? 0;
-    if (Date.now() - lastWrite < AnnotationWriter.COOLDOWN_MS) {
-      this.log?.appendLine(`[WRITER] Cooldown active for ${realUri.fsPath}, skipping`);
+    // Cooldown
+    const last = this.cooldowns.get(key) ?? 0;
+    if (Date.now() - last < AnnotationWriter.COOLDOWN_MS) {
+      this.log?.appendLine(`[WRITER] Cooldown active, skipping`);
       return;
     }
 
@@ -65,59 +81,35 @@ export class AnnotationWriter {
     try {
       doc = await vscode.workspace.openTextDocument(realUri);
     } catch (e) {
-      this.log?.appendLine(`[WRITER] Cannot open ${realUri.fsPath}: ${e}`);
+      this.log?.appendLine(`[WRITER] Cannot open: ${e}`);
       return;
     }
 
     if (doc.isClosed) { return; }
 
-    // ── Check ACTUAL file content for existing annotation ──
-    const fullText = doc.getText();
-    if (fullText.includes(ANNOTATION_MARKER)) {
-      this.log?.appendLine(`[WRITER] File already contains annotation marker, skipping`);
+    const currentText = doc.getText();
+
+    // ── Already annotated? ──
+    if (currentText.includes(ANNOTATION_MARKER)) {
+      this.log?.appendLine(`[WRITER] File already annotated, skipping`);
       return;
     }
 
-    // ── Find where the inserted code is in the real file ──
-    const codeLines = result.text.split('\n').filter(l => l.trim().length > 0);
-    if (codeLines.length === 0) {
-      this.log?.appendLine(`[WRITER] No meaningful code lines found, skipping`);
-      return;
-    }
-
-    const firstCodeLine = codeLines[0].trim();
-    const lastCodeLine = codeLines[codeLines.length - 1].trim();
-
-    // Search for the first line of inserted code
-    let insertLine = -1;
-    for (let i = 0; i < doc.lineCount; i++) {
-      if (doc.lineAt(i).text.trim() === firstCodeLine) {
-        insertLine = i;
-        break;
-      }
-    }
-
-    if (insertLine === -1) {
-      // Code not found in file — might not have been applied yet
-      // Default to line 0
-      this.log?.appendLine(`[WRITER] Could not find code in file, inserting at line 0`);
-      insertLine = 0;
-    }
-
-    // Search for the last line of inserted code
-    let endLine = Math.min(insertLine + codeLines.length, doc.lineCount);
-    for (let i = Math.min(doc.lineCount - 1, insertLine + codeLines.length + 5); i >= insertLine; i--) {
-      if (i < doc.lineCount && doc.lineAt(i).text.trim() === lastCodeLine) {
-        endLine = i + 1;
-        break;
-      }
-    }
+    // ── Find what's NEW ──
+    const oldText = this.snapshots.get(key) ?? '';
+    const { startLine, endLine } = this.findNewCodeRange(doc, oldText, result.text);
 
     this.log?.appendLine(
-      `[WRITER] Writing to ${realUri.fsPath} — start@${insertLine} end@${endLine} lang=${doc.languageId}`
+      `[WRITER] New code at lines ${startLine}-${endLine} in ${realUri.fsPath} ` +
+      `(old=${oldText.length} chars, current=${currentText.length} chars)`
     );
 
-    // ── Build annotation blocks ──
+    if (startLine === endLine) {
+      this.log?.appendLine(`[WRITER] No new code range found, skipping`);
+      return;
+    }
+
+    // ── Build annotations ──
     const startBlock = buildAnnotationStart(doc.languageId, this.employeeId);
     const endBlock = buildAnnotationEnd(doc.languageId);
 
@@ -126,31 +118,32 @@ export class AnnotationWriter {
     this.engine.suppressedDocs.add(result.document.uri.toString());
 
     try {
-      // Use a TextEditor to make edits — more reliable than WorkspaceEdit
-      // for inserting at specific positions
-      const editor = await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+      const editor = await vscode.window.showTextDocument(doc, {
+        preview: false,
+        preserveFocus: true,
+      });
 
-      const success = await editor.edit((editBuilder) => {
-        // Insert START annotation before the code
-        editBuilder.insert(new vscode.Position(insertLine, 0), startBlock);
-
-        // Insert END annotation after the code
-        // Since we're in the same edit, line numbers haven't shifted yet
+      const success = await editor.edit((eb) => {
+        // Insert END marker first (so line numbers for START aren't shifted)
         if (endLine < doc.lineCount) {
-          editBuilder.insert(new vscode.Position(endLine, 0), endBlock);
+          eb.insert(new vscode.Position(endLine, 0), endBlock);
         } else {
-          // Append at end of file
           const lastLine = doc.lineAt(doc.lineCount - 1);
-          editBuilder.insert(lastLine.range.end, '\n' + endBlock);
+          eb.insert(lastLine.range.end, '\n' + endBlock);
         }
+
+        // Insert START marker
+        eb.insert(new vscode.Position(startLine, 0), startBlock);
       });
 
       if (success) {
         this.cooldowns.set(key, Date.now());
         await doc.save();
-        this.log?.appendLine(`[WRITER] ✅ Done — wrapped lines ${insertLine}-${endLine}`);
+        // Update snapshot to include our annotations
+        this.snapshots.set(key, doc.getText());
+        this.log?.appendLine(`[WRITER] ✅ Wrapped lines ${startLine}-${endLine}`);
       } else {
-        this.log?.appendLine(`[WRITER] ❌ editor.edit returned false`);
+        this.log?.appendLine(`[WRITER] ❌ edit failed`);
       }
     } finally {
       setTimeout(() => {
@@ -161,14 +154,78 @@ export class AnnotationWriter {
   }
 
   /**
-   * Resolves virtual document URI to real file:// URI.
+   * Finds the range of NEW lines in the current document by comparing
+   * against the old snapshot and the detected insertion text.
    */
+  private findNewCodeRange(
+    doc: vscode.TextDocument,
+    oldText: string,
+    insertedText: string,
+  ): { startLine: number; endLine: number } {
+    const currentLines = doc.getText().split('\n');
+
+    // ── Case 1: File was empty → everything is new ──
+    if (oldText.trim().length === 0) {
+      return { startLine: 0, endLine: doc.lineCount };
+    }
+
+    // ── Case 2: Use the inserted text to find where it lives ──
+    const insertedLines = insertedText.split('\n').filter(l => l.trim().length > 0);
+    if (insertedLines.length === 0) {
+      return { startLine: 0, endLine: 0 };
+    }
+
+    // ── Case 3: Diff old vs current to find new lines ──
+    const oldLines = oldText.split('\n');
+    const oldSet = new Set(oldLines.map(l => l.trim()));
+
+    // Find first line in current file that wasn't in old file
+    let startLine = -1;
+    let endLine = -1;
+
+    for (let i = 0; i < currentLines.length; i++) {
+      const trimmed = currentLines[i].trim();
+      if (trimmed.length === 0) { continue; }
+      if (!oldSet.has(trimmed)) {
+        if (startLine === -1) { startLine = i; }
+        endLine = i + 1;
+      }
+    }
+
+    // If diff didn't find anything, try matching inserted text directly
+    if (startLine === -1) {
+      const firstInserted = insertedLines[0].trim();
+      const lastInserted = insertedLines[insertedLines.length - 1].trim();
+
+      for (let i = 0; i < currentLines.length; i++) {
+        if (currentLines[i].trim() === firstInserted) {
+          startLine = i;
+          break;
+        }
+      }
+
+      if (startLine !== -1) {
+        for (let i = currentLines.length - 1; i >= startLine; i--) {
+          if (currentLines[i].trim() === lastInserted) {
+            endLine = i + 1;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fallback: wrap everything
+    if (startLine === -1) { startLine = 0; }
+    if (endLine === -1) { endLine = doc.lineCount; }
+
+    return { startLine, endLine };
+  }
+
   private resolveRealFile(doc: vscode.TextDocument): vscode.Uri | null {
     if (doc.uri.scheme === 'file' || doc.uri.scheme === 'untitled') {
       return doc.uri;
     }
 
-    // Virtual schemes: fileName still has the real path
     const fsPath = doc.fileName;
     if (fsPath && fsPath !== '' && !fsPath.includes('extension-output')) {
       try {
@@ -184,6 +241,7 @@ export class AnnotationWriter {
   public onDocumentClosed(uri: string): void {
     this.locks.delete(uri);
     this.cooldowns.delete(uri);
+    this.snapshots.delete(uri);
     this.engine.suppressedDocs.delete(uri);
   }
 }
