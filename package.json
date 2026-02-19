@@ -1,43 +1,80 @@
 {
-  "name": "ai-auto-annotator",
-  "displayName": "annotator",
-  "description": "annotates AI Generated Content",
-  "version": "0.0.1",
+  "name": "ai-code-annotator",
+  "displayName": "AI Code Annotator",
+  "description": "Automatically annotates AI-assisted code insertions using post-insertion heuristics",
+  "version": "1.0.0",
+  "publisher": "your-org",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.85.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": ["onLanguage:python",
-    "onLanguage:java",
-    "onLanguage:javascript",
-    "onLanguage:typescript"],
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "ai-auto-annotator.helloWorld",
-        "title": "Hello World"
+        "command": "aiAnnotator.toggle",
+        "title": "AI Annotator: Toggle Detection"
+      },
+      {
+        "command": "aiAnnotator.status",
+        "title": "AI Annotator: Show Status"
       }
-    ]
+    ],
+    "keybindings": [
+      {
+        "command": "aiAnnotator.interceptPaste",
+        "key": "ctrl+v",
+        "mac": "cmd+v",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "AI Code Annotator",
+      "properties": {
+        "aiAnnotator.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable AI code annotation detection"
+        },
+        "aiAnnotator.charsPerSecondThreshold": {
+          "type": "number",
+          "default": 10,
+          "description": "Characters per second threshold above which insertion is classified as AI-assisted"
+        },
+        "aiAnnotator.minCharsForDetection": {
+          "type": "number",
+          "default": 8,
+          "description": "Minimum characters in an insertion to trigger detection analysis"
+        },
+        "aiAnnotator.envFileName": {
+          "type": "string",
+          "default": ".env",
+          "description": "Name of the environment file to read EMPLOYEE_ID from"
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test"
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/vscode": "^1.109.0",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
-    "typescript-eslint": "^8.54.0",
-    "eslint": "^9.39.2",
-    "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.8",
+    "eslint": "^9.0.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1"
   }
 }

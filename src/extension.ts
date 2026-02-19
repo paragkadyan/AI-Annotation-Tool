@@ -1,50 +1,114 @@
 import * as vscode from 'vscode';
+import { getConfig, readEmployeeId } from './config';
+import { ClipboardDetector } from './clipboardDetector';
+import { DetectionEngine } from './detectionEngine';
+import { EventListener } from './eventListener';
+import { AnnotationWriter } from './annotationWriter';
+import { StatusBarManager } from './statusBar';
 
-export function activate(context: vscode.ExtensionContext) {
-    console.log('AI Auto-Annotator is now active!');
-	vscode.window.showInformationMessage("Annotator is Watching...");
+let clipboardDetector: ClipboardDetector;
+let detectionEngine: DetectionEngine;
+let eventListener: EventListener;
+let annotationWriter: AnnotationWriter;
+let statusBar: StatusBarManager;
 
-    // This function adds the header/footer
-    const applyAnnotation = async (document: vscode.TextDocument) => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.document !== document) return;
+export function activate(ctx: vscode.ExtensionContext): void {
+  console.log('[AI Annotator] Activating…');
 
-        // Configuration: Use $env:USERNAME for Employee ID
-        const empId = process.env.USERNAME || "Unknown_User";
-        const date = new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
-        const lang = document.languageId;
+  const config = getConfig();
+  const employeeId = readEmployeeId(config.envFileName) ?? 'UNKNOWN';
 
-        // Adaptive Comment Style
-        let s = "#", e = "";
-        if (['javascript', 'typescript', 'java'].includes(lang)) { s = "//"; }
-        else if (lang === 'html' || lang === 'xml') { s = ""; }
+  // ── Instantiate modules ──────────────────────────────────
+  clipboardDetector = new ClipboardDetector();
+  detectionEngine = new DetectionEngine(clipboardDetector, config);
+  annotationWriter = new AnnotationWriter(employeeId, detectionEngine);
+  statusBar = new StatusBarManager();
+  statusBar.setEnabled(config.enabled);
 
-        const header = `${s} GENERATED_CODE on ${date}${e}\n` +
-                       `${s} TOOL_VERSION : GitHub Copilot 1.50${e}\n` +
-                       `${s} EMPLOYEEID : ${empId}${e}\n` +
-                       `${s} ACTION : GENERATED${e}\n`;
-        const footer = `\n${s} END: AI_Generated_Code on ${date}${e}`;
+  // Wire: detection → annotation
+  detectionEngine.onResult(async (result) => {
+    try {
+      await annotationWriter.annotate(result);
+      statusBar.flashAnnotation();
+    } catch (err) {
+      console.error('[AI Annotator] Annotation failed:', err);
+    }
+  });
 
-        await editor.edit(editBuilder => {
-            // Check if header is already there to avoid double-adding
-            const firstLine = document.lineAt(0).text;
-            if (!firstLine.includes("GENERATED_CODE")) {
-                editBuilder.insert(new vscode.Position(0, 0), header);
-                editBuilder.insert(new vscode.Position(document.lineCount, 0), footer);
-            }
-        });
-    };
+  // Start listening
+  eventListener = new EventListener(detectionEngine);
 
-    // The Observer: Fires when Copilot generates a block of code (usually > 40 chars)
-    const watcher = vscode.workspace.onDidChangeTextDocument(event => {
-        const changes = event.contentChanges;
-        if (changes.length > 0 && changes[0].text.length > 10) {
-            // Debounce for 1 second to wait for Copilot to finish the insertion
-            setTimeout(() => applyAnnotation(event.document), 1000);
-        }
-    });
+  // ── Commands ─────────────────────────────────────────────
+  const toggleCmd = vscode.commands.registerCommand('aiAnnotator.toggle', () => {
+    const cfg = vscode.workspace.getConfiguration('aiAnnotator');
+    const current = cfg.get<boolean>('enabled', true);
+    cfg.update('enabled', !current, vscode.ConfigurationTarget.Workspace);
+    vscode.window.showInformationMessage(
+      `AI Annotator: ${!current ? 'ENABLED' : 'DISABLED'}`
+    );
+  });
 
-    context.subscriptions.push(watcher);
+  const statusCmd = vscode.commands.registerCommand('aiAnnotator.status', () => {
+    const cfg = getConfig();
+    const id = readEmployeeId(cfg.envFileName) ?? 'UNKNOWN';
+    vscode.window.showInformationMessage(
+      `AI Annotator: ${cfg.enabled ? 'ACTIVE' : 'DISABLED'} | ` +
+      `Min chars: ${cfg.minCharsForDetection} | Employee: ${id}`
+    );
+  });
+
+  // ── React to config changes ──────────────────────────────
+  const configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (!e.affectsConfiguration('aiAnnotator')) { return; }
+    const newCfg = getConfig();
+    detectionEngine.updateConfig(newCfg);
+    statusBar.setEnabled(newCfg.enabled);
+    console.log('[AI Annotator] Configuration updated');
+  });
+
+  // ── Watch .env for changes ───────────────────────────────
+  const envDisposables = createEnvWatcher(config.envFileName);
+
+  // ── Cleanup on document close ────────────────────────────
+  const docCloseWatcher = vscode.workspace.onDidCloseTextDocument((doc) => {
+    annotationWriter.onDocumentClosed(doc.uri.toString());
+  });
+
+  // ── Push all disposables ─────────────────────────────────
+  ctx.subscriptions.push(
+    clipboardDetector,
+    eventListener,
+    statusBar,
+    toggleCmd,
+    statusCmd,
+    configWatcher,
+    docCloseWatcher,
+    ...envDisposables,
+  );
+
+  console.log(
+    `[AI Annotator] Active — Employee: ${employeeId}, ` +
+    `MinChars: ${config.minCharsForDetection}`
+  );
+  vscode.window.showInformationMessage('AI Annotator is active');
 }
 
-export function deactivate() {}
+export function deactivate(): void {
+  console.log('[AI Annotator] Deactivated');
+}
+
+function createEnvWatcher(envFileName: string): vscode.Disposable[] {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder) { return []; }
+
+  const pattern = new vscode.RelativePattern(folder, envFileName);
+  const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+  const reload = () => {
+    const id = readEmployeeId(envFileName) ?? 'UNKNOWN';
+    annotationWriter.setEmployeeId(id);
+    console.log(`[AI Annotator] .env reloaded — Employee: ${id}`);
+  };
+
+  return [watcher, watcher.onDidChange(reload), watcher.onDidCreate(reload)];
+}
