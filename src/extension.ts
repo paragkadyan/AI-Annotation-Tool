@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 
+let log: vscode.OutputChannel;
 export function activate(context: vscode.ExtensionContext) {
-    const log = vscode.window.createOutputChannel("AI Annotator");
+    log = vscode.window.createOutputChannel("AI Annotator");
     log.show(true);
 
     const activeJobs = new Set<string>();
@@ -61,15 +62,38 @@ export function activate(context: vscode.ExtensionContext) {
     };
 
     const textWatcher = vscode.workspace.onDidChangeTextDocument(async event => {
-        for (const change of event.contentChanges) {
-            // Trigger on significant changes
-            if (change.text.length > 50) {
-                if (change.text.includes("AI_START")) continue;
-                
-                // Allow a shorter delay for nested updates to feel responsive
-                setTimeout(() => applyAnnotation(event.document, change.range, change.text), 800);
+    // 1. UNDO/REDO GUARD
+    // If the user is undoing or redoing, we strictly ignore the event.
+    // This prevents "Zombie Annotations" from appearing when you Ctrl+Z.
+    if (event.reason === vscode.TextDocumentChangeReason.Undo || 
+        event.reason === vscode.TextDocumentChangeReason.Redo) {
+        log.appendLine(`[SKIP] Detected ${event.reason === vscode.TextDocumentChangeReason.Undo ? 'UNDO' : 'REDO'} action. Ignoring changes to prevent annotation issues.`);    
+        return; 
+    }
+
+    if (event.document.uri.scheme !== 'file') return;
+
+    for (const change of event.contentChanges) {
+        // Trigger on significant changes (> 50 chars)
+        if (change.text.length > 50) {
+            
+            // 2. SELF-TRIGGER GUARD
+            // Ensure we aren't reacting to our own tags being inserted
+            if (change.text.includes("AI_START") || change.text.includes("AI_END")) {
+                continue;
             }
+
+            const clipboard = await vscode.env.clipboard.readText();
+            if (change.text.trim() === clipboard.trim())
+            {
+                log.appendLine(`[SKIP] Change matches clipboard content. Ignoring to prevent redundant annotation.`);
+                continue;
+            }
+
+            // Proceed to annotation logic
+            setTimeout(() => applyAnnotation(event.document, change.range, change.text), 1000);
         }
+    }
     });
 
     context.subscriptions.push(log, textWatcher);
