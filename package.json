@@ -9,10 +9,12 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onLanguage:python",
+  "activationEvents": [
+    "onLanguage:python",
     "onLanguage:java",
     "onLanguage:javascript",
-    "onLanguage:typescript"],
+    "onLanguage:typescript"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -20,7 +22,22 @@
         "command": "ai-auto-annotator.helloWorld",
         "title": "Hello World"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "AI Annotator",
+      "properties": {
+        "aiAnnotator.employeeId": {
+          "type": "string",
+          "default": "Sri",
+          "description": "Enter your Employee ID for AI code tagging."
+        },
+        "aiAnnotator.enableCollabMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, the extension will track multiple contributors in the same AI block."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
