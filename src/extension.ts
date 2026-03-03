@@ -1,130 +1,139 @@
 import * as vscode from 'vscode';
 
 let log: vscode.OutputChannel;
-const activeJobs = new Set<string>();
+let isProcessing = false;
+let lastActionTime = 0;
+let debounceTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     log = vscode.window.createOutputChannel("AI Annotator Pro");
     log.show(true);
-    log.appendLine("[SYSTEM] AI Annotator Active.");
+    log.appendLine("[INIT] AI Annotator Active. EditedBy Feature Enabled.");
 
-    /**
-     * HELPER: Resolves Identity and Comment Syntax
-     */
     const getContext = (doc: vscode.TextDocument) => {
         const config = vscode.workspace.getConfiguration('aiAnnotator');
-        const empId = config.get<string>('employeeId') || "AravindKumar";
-        
+        const empId = config.get<string>('employeeId') || "JACK";
         const lang = doc.languageId;
         let s = "//", e = "";
         if (['python', 'ruby', 'yaml'].includes(lang)) s = "#";
         else if (['html', 'xml'].includes(lang)) { s = ""; }
-        
         return { empId, s, e };
     };
 
-    /**
-     * CORE LOGIC: Analyzes and wraps code blocks
-     */
     const applyAnnotation = async (document: vscode.TextDocument, range: vscode.Range, insertedText: string) => {
-        const uri = document.uri;
-        //log.appendLine(`[ANALYZE] Change detected in ${document.fileName} at line ${range.start.line + 1}`);
-        //log.appendLine(`[ANALYZE] Inserted Text: "${insertedText}"`);
-        const rangeKey = `${uri.toString()}:${range.start.line}`;
+        const now = Date.now();
+        if (isProcessing && (now - lastActionTime > 5000)) isProcessing = false;
+        if (isProcessing) return;
 
-        if (activeJobs.has(rangeKey)) return;
+        isProcessing = true;
+        lastActionTime = now;
 
         const { empId, s, e } = getContext(document);
         const date = new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
-
-        // 1. NESTING CHECK
-        let isInsideExistingBlock = false;
-        let parentHeaderLine = -1;
-        const stopLine = Math.max(0, range.start.line - 500);
-
-        for (let i = range.start.line - 1; i >= stopLine; i--) {
-            const lineText = document.lineAt(i).text;
-            if (lineText.includes("AI_END")) break;
-            if (lineText.includes("AI_START")) {
-                isInsideExistingBlock = true;
-                parentHeaderLine = i;
-                break;
-            }
-        }
-
-        activeJobs.add(rangeKey);
         const edit = new vscode.WorkspaceEdit();
+        const fullText = document.getText();
 
         try {
-            if (isInsideExistingBlock && parentHeaderLine !== -1) {
-                const existingHeader = document.lineAt(parentHeaderLine).text;
-                
-                // FEATURE: COLLABORATIVE UPDATE
-                // Only update if current user is NOT in the header or it's a new day
-                if (!existingHeader.includes(empId) || !existingHeader.includes(date)) {
-                    const separator = existingHeader.includes("EditedBy") ? ", " : " | EditedBy: ";
-                    const newHeader = `${existingHeader.trimEnd()}${separator}${empId} (${date})${e}\n`;
-                    
-                    edit.replace(uri, document.lineAt(parentHeaderLine).rangeIncludingLineBreak, newHeader);
-                    log.appendLine(`[COLLAB] Contribution logged for ${empId} at line ${parentHeaderLine + 1}`);
+            // --- PATH 1: CHAT SCANNER ---
+            if (fullText.includes("###AI_GEN")) {
+                const startRegex = /###\s*AI_GEN_START\s*###/gi;
+                const endRegex = /###\s*AI_GEN_END\s*###/gi;
+                let match;
+                while ((match = startRegex.exec(fullText)) !== null) {
+                    edit.replace(document.uri, new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + match[0].length)), `${s} >>> AI_START | ID: ${empId} | ${date}${e}`);
                 }
-            } else {
-                // FEATURE: NEW WRAP
-                const header = `${s} >>> AI_START | ID: ${empId} | ${date}${e}\n`;
-                const footer = `\n${s} <<< AI_END${e}\n`;
-                
-                const linesAdded = insertedText.split('\n').length;
-                edit.insert(uri, new vscode.Position(range.start.line, 0), header);
-                edit.insert(uri, new vscode.Position(range.start.line + linesAdded, 0), footer);
-                
-                log.appendLine(`[NEW] Wrapped AI block for ${empId} at line ${range.start.line + 1}`);
+                while ((match = endRegex.exec(fullText)) !== null) {
+                    edit.replace(document.uri, new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + match[0].length)), `${s} <<< AI_END${e}`);
+                }
+                await vscode.workspace.applyEdit(edit);
+                return; // Chat is handled, exit completely.
             }
 
-            await vscode.workspace.applyEdit(edit);
+            // --- PATH 2: EDITEDBY & TAB WRAPPER ---
+            if (insertedText.length > 20) {
+                let parentHeaderLine = -1;
+                
+                // 1. Upward Scan to check for existing blocks
+                for (let i = range.start.line - 1; i >= Math.max(0, range.start.line - 100); i--) {
+                    const lineText = document.lineAt(i).text;
+                    // If we hit an END before a START, we are NOT inside a block
+                    if (lineText.includes("AI_END")) break; 
+                    if (lineText.includes("AI_START")) {
+                        parentHeaderLine = i;
+                        break;
+                    }
+                }
+
+                if (parentHeaderLine !== -1) {
+                    // CASE A: UPDATE HEADER (EditedBy)
+                    const headerLine = document.lineAt(parentHeaderLine);
+                    const currentHeaderText = headerLine.text;
+
+                    if (!currentHeaderText.includes(`${empId} (${date})`)) {
+                        const separator = currentHeaderText.includes("EditedBy:") ? ", " : " | EditedBy: ";
+                        const updatedHeader = currentHeaderText.replace(e, "").trimEnd() + `${separator}${empId} (${date})${e}\n`;
+                        
+                        edit.replace(document.uri, headerLine.rangeIncludingLineBreak, updatedHeader);
+                        log.appendLine(`[EDITEDBY] Tagged ${empId} on line ${parentHeaderLine + 1}`);
+                    }
+                    // IMPORTANT: We found a parent, so we DO NOT want to add a new header/footer.
+                } else {
+                    // CASE B: NEW BLOCK (Wrap)
+                    log.appendLine("[TAB] New AI block detected. Wrapping...");
+                    const header = `${s} >>> AI_START | ID: ${empId} | ${date}${e}\n`;
+                    const footer = `\n${s} <<< AI_END${e}\n`;
+                    const linesAdded = insertedText.split('\n').length;
+
+                    edit.insert(document.uri, new vscode.Position(range.start.line, 0), header);
+                    edit.insert(document.uri, new vscode.Position(range.start.line + linesAdded, 0), footer);
+                }
+                
+                await vscode.workspace.applyEdit(edit);
+            }
         } catch (err) {
             log.appendLine(`[ERROR] ${err}`);
         } finally {
-            setTimeout(() => activeJobs.delete(rangeKey), 1500);
+            setTimeout(() => { isProcessing = false; }, 800);
         }
     };
 
-    /**
-     * LISTENER 1: Incremental edits
-     */
-    const changeSub = vscode.workspace.onDidChangeTextDocument(async event => {
-        if (event.reason === vscode.TextDocumentChangeReason.Undo || 
-            event.reason === vscode.TextDocumentChangeReason.Redo) return;
+    const changeSub = vscode.workspace.onDidChangeTextDocument(event => {
+    const doc = event.document;
+    if (doc !== vscode.window.activeTextEditor?.document) return;
 
-        for (const change of event.contentChanges) {
-            const text = change.text;
+    // 1. If we are already processing, don't even start a new timer.
+    // This is the first line of defense against the loop.
+    if (isProcessing) return;
 
-            // PREVENT LOOPS: Ignore if text contains our own tags or logs
-            if (text.length < 50 || text.includes("AI_START") || text.includes("AI_END") || text.includes("[SYSTEM]") || text.includes("[ANALYZE]")) continue;
+    const fullText = doc.getText();
+    const hasMarkers = fullText.includes("###AI_GEN");
+    log.appendLine(`[DETECT] Change detected in ${doc.fileName}. Markers present: ${hasMarkers}`); 
+    for (const change of event.contentChanges) {
+        const text = change.text;
 
-            const clipboard = await vscode.env.clipboard.readText();
-            if (text.trim() === clipboard.trim()) continue;
+        // 2. SELF-RECOGNITION: Ignore our own tags
+        if (text.includes(">>> AI_START") || text.includes("<<< AI_END")) continue;
 
-            setTimeout(() => applyAnnotation(event.document, change.range, text), 1000);
+        // 3. THE SAFE TRIGGER
+        if (hasMarkers || text.length > 20 || text.includes("#")) {
+            log.appendLine(`[TRIGGER] Change qualifies for processing. Text: ${text}`);
+            if (debounceTimer) clearTimeout(debounceTimer);
+            
+            const r = change.range;
+            const t = text;
+
+            debounceTimer = setTimeout(() => {
+                // Double-check lock before firing the heavy logic
+                if (!isProcessing) {
+                    applyAnnotation(doc, r, t);
+                }
+            }, 1200); 
+            
+            break; 
         }
-    });
-
-    /**
-     * LISTENER 2: New files / Existing Workspace
-     */
-    const openSub = vscode.workspace.onDidOpenTextDocument(doc => {
-        if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'untitled') return;
-
-        setTimeout(() => {
-            const text = doc.getText();
-            // Don't log for empty files or already tagged files
-            if (text.trim().length > 50 && !text.includes("AI_START")) {
-                log.appendLine(`[FILE-OPEN] Scanning: ${doc.fileName}`);
-                applyAnnotation(doc, new vscode.Range(0, 0, 0, 0), text);
-            }
-        }, 1000);
-    });
-
-    context.subscriptions.push(log, changeSub, openSub);
+    }
+});
+    context.subscriptions.push(log, changeSub);
 }
 
 export function deactivate() {}
