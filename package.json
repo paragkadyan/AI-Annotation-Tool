@@ -28,7 +28,7 @@
       "properties": {
         "aiAnnotator.employeeId": {
           "type": "string",
-          "default": "Sri",
+          "default": "DING",
           "description": "Enter your Employee ID for AI code tagging."
         },
         "aiAnnotator.enableCollabMode": {
@@ -45,16 +45,41 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:coverage": "vscode-test --coverage --reporter=html --reporter=text"
   },
   "devDependencies": {
-    "@types/vscode": "^1.109.0",
+    "@cyclonedx/cyclonedx-npm": "^4.2.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.54.0",
-    "eslint": "^9.39.2",
-    "typescript": "^5.9.3",
+    "@types/vscode": "^1.109.0",
     "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.2",
+    "nyc": "^18.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
+  },
+  "nyc": {
+    "extension": [
+      ".ts"
+    ],
+    "include": [
+      "src/**/*.ts"
+    ],
+    "exclude": [
+      "out/test/**"
+    ],
+    "require": [
+      "ts-node/register"
+    ],
+    "sourceMap": true,
+    "instrument": true,
+    "all": true,
+    "reporter": [
+      "text",
+      "html"
+    ]
   }
 }
