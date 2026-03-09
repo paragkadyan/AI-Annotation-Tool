@@ -7,6 +7,7 @@ let debounceTimer: NodeJS.Timeout | undefined;
 export const startRegex = /###\s*AI_GEN_START\s*###/gi;
 let log: vscode.OutputChannel;
 let currentEmployeeId: string = "JACK"; 
+let aiStatusBarItem: vscode.StatusBarItem;
 
 /**
  * PATH 0: Context Logic
@@ -94,20 +95,71 @@ export async function applyAnnotation(document: vscode.TextDocument, range: vsco
     }
 }
 
-export function handleTextChange(event: vscode.TextDocumentChangeEvent) {
+function updateAICodePercentage(document: vscode.TextDocument) {
+    if (document.fileName.endsWith('copilot-instructions.md')) return;
+
+    const lineCount = document.lineCount;
+    let aiLines = 0;
+    let totalMeaningfulLines = 0;
+    let insideAIBlock = false;
+
+    for (let i = 0; i < lineCount; i++) {
+        const line = document.lineAt(i);
+        const text = line.text.trim(); // Remove leading/trailing whitespace
+
+        // 1. Handle Markers (We don't count the marker lines themselves as code)
+        if (text.includes("AI_START")) {
+            insideAIBlock = true;
+            continue; 
+        }
+        if (text.includes("AI_END")) {
+            insideAIBlock = false;
+            continue;
+        }
+
+        // 2. Count Meaningful Lines
+        if (text.length > 0) {
+            totalMeaningfulLines++;
+            if (insideAIBlock) {
+                aiLines++;
+            }
+        }
+    }
+
+    // Calculate based on meaningful content rather than raw line count
+    const percentage = totalMeaningfulLines > 0 
+        ? ((aiLines / totalMeaningfulLines) * 100).toFixed(1) 
+        : "0.0";
+    
+    aiStatusBarItem.text = `$(circuit-board) AI Content: ${percentage}%`;
+    aiStatusBarItem.tooltip = `Code Lines: ${totalMeaningfulLines} | AI Lines: ${aiLines}`;
+    aiStatusBarItem.show();
+}
+
+export async function handleTextChange(event: vscode.TextDocumentChangeEvent) {
     const doc = event.document;
     if (doc !== vscode.window.activeTextEditor?.document) return;
     if (isProcessing) return;
+    
+    if (event.reason === vscode.TextDocumentChangeReason.Undo || 
+        event.reason === vscode.TextDocumentChangeReason.Redo) {
+        return;
+    }
 
     if (doc.fileName.endsWith('copilot-instructions.md')) {
         return; 
     }
-
+    const clipboard = await vscode.env.clipboard.readText();
     const fullText = doc.getText();
     const hasMarkers = fullText.includes("###AI_GEN");
 
     for (const change of event.contentChanges) {
         const text = change.text;
+        
+        if (text.trim().length > 0 && text.trim() === clipboard.trim()) {
+            if (log) log.appendLine(`[SKIP] Manual paste detected from clipboard.`);
+            continue; 
+        }
 
         if (hasMarkers) {
             if (log) log.appendLine(`[TRIGGER] Handshake detected. Overriding filters.`);
@@ -182,16 +234,47 @@ async function createInstructionFile() {
 }
 
 export async function activate(context: vscode.ExtensionContext) {
+    // 1. Initialize UI/Logging immediately and register for disposal
     log = vscode.window.createOutputChannel("AI Annotator Pro");
+    aiStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    
+    // Push these FIRST so they are cleared even if the rest of the function fails
+    context.subscriptions.push(log, aiStatusBarItem);
+    
     log.show(true);
     log.appendLine("[INIT] AI Annotator Active.");
 
-    // 1. Employee ID Setup
+    // 2. Setup Event Listeners
+    // Switch Tabs
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(editor => {
+            if (editor) updateAICodePercentage(editor.document);
+        })
+    );
+
+    // Text Changes (Percentage calculation)
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(event => {
+            if (event.document === vscode.window.activeTextEditor?.document) {
+                updateAICodePercentage(event.document);
+            }
+        })
+    );
+
+    // Text Changes (Annotation Logic - handleTextChange)
+    const changeSub = vscode.workspace.onDidChangeTextDocument(handleTextChange);
+    context.subscriptions.push(changeSub);
+
+    // Initial check for open file
+    if (vscode.window.activeTextEditor) {
+        updateAICodePercentage(vscode.window.activeTextEditor.document);
+    }
+
+    // 3. Employee ID Setup
     let savedId = context.globalState.get<string>('employeeId');
     if (!savedId) {
         savedId = await vscode.window.showInputBox({
             prompt: "Setup: Enter your Employee ID",
-            placeHolder: "e.g. 12345",
             ignoreFocusOut: true,
             validateInput: text => text.length > 0 ? null : "ID cannot be empty"
         });
@@ -200,43 +283,33 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     currentEmployeeId = savedId;
 
-    // 2. SMART CHECK: Check if markers exist even if file exists
+    // 4. SMART CHECK for Instructions
     const folders = vscode.workspace.workspaceFolders;
     if (folders) {
         const fileUri = vscode.Uri.joinPath(folders[0].uri, '.github', 'copilot-instructions.md');
         try {
             const fileData = await vscode.workspace.fs.readFile(fileUri);
             const content = Buffer.from(fileData).toString('utf8');
-
             if (!content.includes("###AI_GEN_START###")) {
-                const action = await vscode.window.showInformationMessage(
-                    "AI Annotator: Handshake markers missing in existing instruction file.",
-                    "Append Markers"
-                );
+                const action = await vscode.window.showInformationMessage("AI Annotator: Handshake markers missing.", "Append Markers");
                 if (action === "Append Markers") { await createInstructionFile(); }
             }
         } catch {
-            // File doesn't exist at all
-            const action = await vscode.window.showInformationMessage(
-                "AI Annotator: No handshake file found.",
-                "Create .github/copilot-instructions.md"
-            );
+            const action = await vscode.window.showInformationMessage("AI Annotator: No handshake file found.", "Create .github/copilot-instructions.md");
             if (action === "Create .github/copilot-instructions.md") { await createInstructionFile(); }
         }
     }
 
-    // 3. Register Commands
-    const resetIdCmd = vscode.commands.registerCommand('ai-annotator.resetId', async () => {
-        await context.globalState.update('employeeId', undefined);
-        vscode.window.showInformationMessage("ID cleared. Please reload VS Code.");
-    });
-
-    const initFileCmd = vscode.commands.registerCommand('ai-annotator.initFile', async () => {
-        await createInstructionFile();
-    });
-
-    const changeSub = vscode.workspace.onDidChangeTextDocument(handleTextChange);
-    context.subscriptions.push(log, changeSub, resetIdCmd, initFileCmd);
+    // 5. Register Commands
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ai-annotator.resetId', async () => {
+            await context.globalState.update('employeeId', undefined);
+            vscode.window.showInformationMessage("ID cleared. Please reload VS Code.");
+        }),
+        vscode.commands.registerCommand('ai-annotator.initFile', async () => {
+            await createInstructionFile();
+        })
+    );
 }
 
 export function deactivate() {}
