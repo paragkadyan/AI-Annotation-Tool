@@ -1,6 +1,8 @@
 import * as assert from 'assert';
 import * as myExtension from '../extension'; 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 
 suite('Extension Logic Coverage Test', () => {
 
@@ -139,10 +141,10 @@ suite('Extension Logic Coverage Test', () => {
     const updatedText = document.getText();
     
     // --- DEBUG: See what is actually happening ---
-    //console.log("DEBUG UPDATED TEXT:", updatedText);
+    console.log("DEBUG UPDATED TEXT:", updatedText);
 
     // Check for the "EditedBy" keyword first
-    assert.ok(updatedText.includes("EditedBy: DING"), `Expected 'EditedBy: JACK' in: ${updatedText}`);
+    assert.ok(updatedText.includes("EditedBy: JACK"), `Expected 'EditedBy: JACK' in: ${updatedText}`);
     
     // Check for the date (just check for the year to be safe against day/month format flips)
     assert.ok(updatedText.includes("2026"), "The header should contain the current year (2026)");
@@ -150,5 +152,67 @@ suite('Extension Logic Coverage Test', () => {
     const startCount = (updatedText.match(/AI_START/g) || []).length;
     assert.strictEqual(startCount, 1, "Should have modified the existing header, not added a new one");
 });
+
+    test('Scenario 1: Create new file if not exists', async () => {
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (!workspaceFolders) {
+			assert.fail('Test requires an open workspace folder.');
+		}
+
+		const rootPath = workspaceFolders[0].uri.fsPath;
+		const githubPath = path.join(rootPath, '.github');
+		const filePath = path.join(githubPath, 'copilot-instructions.md');
+
+		// Cleanup before test
+		if (fs.existsSync(filePath)) { fs.unlinkSync(filePath); }
+
+		// Trigger command (assuming it's registered as ai-annotator.initFile)
+		await vscode.commands.executeCommand('ai-annotator.initFile');
+
+		// Wait briefly for file system
+		await new Promise(resolve => setTimeout(resolve, 500));
+
+		assert.strictEqual(fs.existsSync(filePath), true, 'File should be created');
+		const content = fs.readFileSync(filePath, 'utf8');
+		assert.ok(content.includes('###AI_GEN_START###'), 'Should contain the start marker');
+	});
+
+	test('Scenario 2: Append to existing random file', async () => {
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (!workspaceFolders) { assert.fail('Workspace needed.'); }
+
+		const rootPath = workspaceFolders[0].uri.fsPath;
+		const githubPath = path.join(rootPath, '.github');
+		const filePath = path.join(githubPath, 'copilot-instructions.md');
+
+		// Prepare existing random file
+		if (!fs.existsSync(githubPath)) { fs.mkdirSync(githubPath); }
+		fs.writeFileSync(filePath, 'RANDOM_EXISTING_INSTRUCTION');
+
+		// Execute command
+		await vscode.commands.executeCommand('ai-annotator.initFile');
+		await new Promise(resolve => setTimeout(resolve, 500));
+
+		const content = fs.readFileSync(filePath, 'utf8');
+		assert.ok(content.includes('RANDOM_EXISTING_INSTRUCTION'), 'Original content must be preserved');
+		assert.ok(content.includes('###AI_GEN_START###'), 'Handshake should be appended');
+	});
+
+	test('Scenario 3: Do not append if already present', async () => {
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (!workspaceFolders) { assert.fail('Workspace needed.'); }
+
+		const filePath = path.join(workspaceFolders[0].uri.fsPath, '.github', 'copilot-instructions.md');
+		
+		const initialContent = fs.readFileSync(filePath, 'utf8');
+		const initialSize = fs.statSync(filePath).size;
+
+		// Execute again
+		await vscode.commands.executeCommand('ai-annotator.initFile');
+		await new Promise(resolve => setTimeout(resolve, 500));
+
+		const finalSize = fs.statSync(filePath).size;
+		assert.strictEqual(initialSize, finalSize, 'File size should not change if markers exist');
+	});
 
 });

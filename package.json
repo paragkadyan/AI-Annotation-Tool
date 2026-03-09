@@ -21,6 +21,14 @@
       {
         "command": "ai-auto-annotator.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "ai-annotator.resetId",
+        "title": "AI Annotator: Reset Employee ID"
+      },
+      {
+          "command": "ai-annotator.initFile",
+          "title": "AI Annotator: Create Handshake File"
       }
     ],
     "configuration": {
