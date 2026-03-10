@@ -1,133 +1,79 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
-import { getCommentStyle } from './commentStyles';
+import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
+import { getCommentStyle } from "./commentStyles";
+
+let statusBarItem: vscode.StatusBarItem;
 
 const documentSizeMap = new Map<string, number>();
-const snapshotMap = new Map<string, string>();
-
-let extensionEnabled = true;
-let cooldown = false;
-let statusBarItem: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext) {
 
-    // Status Bar
     statusBarItem = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Right,
         100
     );
-    statusBarItem.command = "aiAnnotator.toggle";
-    updateStatusBar();
+
+    statusBarItem.text = "AI Annotator (0% AI)";
     statusBarItem.show();
+
     context.subscriptions.push(statusBarItem);
 
-    // Toggle Command
-    context.subscriptions.push(
-        vscode.commands.registerCommand("aiAnnotator.toggle", () => {
-            extensionEnabled = !extensionEnabled;
-            updateStatusBar();
-            vscode.window.showInformationMessage(
-                extensionEnabled
-                    ? "AI Annotator Enabled"
-                    : "AI Annotator Disabled"
-            );
-        })
-    );
-
-    // Force Annotate Command
-    context.subscriptions.push(
-        vscode.commands.registerCommand("aiAnnotator.forceAnnotate", async () => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) return;
-
-            const text = editor.document.getText();
-            await annotateAIBlock(editor.document, text);
-        })
-    );
-
-    // Main Detection Listener
-    const disposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
-
-        if (!extensionEnabled) return;
-        if (cooldown) return;
+    vscode.workspace.onDidChangeTextDocument(async (event) => {
 
         const document = event.document;
-        const docUri = document.uri.toString();
-        const currentSize = document.getText().length;
-
-        if (!documentSizeMap.has(docUri)) {
-            documentSizeMap.set(docUri, currentSize);
-            snapshotMap.set(docUri, document.getText());
-            return;
-        }
-
-        const previousSize = documentSizeMap.get(docUri) || 0;
-        const sizeDiff = currentSize - previousSize;
-        documentSizeMap.set(docUri, currentSize);
-
-        // Ignore small typing
-        if (sizeDiff <= 30) return;
 
         const insertedText = event.contentChanges
             .map(c => c.text)
             .join("");
 
-        const insertedLines = insertedText.split("\n").length - 1;
+        if (!insertedText) return;
 
-        if (insertedLines < 2) return;
+        const employeeId = getEmployeeId();
 
-        // Ignore manual paste
-        const clipboardText = await vscode.env.clipboard.readText();
+        const docUri = document.uri.toString();
+        const currentSize = document.getText().length;
+
+        if (!documentSizeMap.has(docUri)) {
+            documentSizeMap.set(docUri, currentSize);
+            return;
+        }
+
+        const previousSize = documentSizeMap.get(docUri) || 0;
+        const sizeDiff = currentSize - previousSize;
+
+        documentSizeMap.set(docUri, currentSize);
+
+        // ignore small typing
+        if (sizeDiff < 30) return;
+
+        // check paste
+        const clipboard = await vscode.env.clipboard.readText();
 
         if (
-            clipboardText.replace(/\s/g, "") ===
+            clipboard.replace(/\s/g, "") ===
             insertedText.replace(/\s/g, "")
         ) {
             return;
         }
 
-        // Snapshot check (avoid double annotation)
-        const previousSnapshot = snapshotMap.get(docUri) || "";
-        if (previousSnapshot.includes(insertedText)) return;
+        await annotateAIBlock(document, insertedText, employeeId);
 
-        cooldown = true;
+        updateAIPercentage(document);
 
-        await annotateAIBlock(document, insertedText);
-
-        snapshotMap.set(docUri, document.getText());
-
-        setTimeout(() => {
-            cooldown = false;
-        }, 1500);
     });
 
-    context.subscriptions.push(disposable);
-}
-
-function updateStatusBar() {
-    if (!statusBarItem) return;
-
-    if (extensionEnabled) {
-        statusBarItem.text = "$(eye) AI Annotator";
-        statusBarItem.backgroundColor = undefined;
-    } else {
-        statusBarItem.text = "$(circle-slash) AI Annotator OFF";
-        statusBarItem.backgroundColor =
-            new vscode.ThemeColor("statusBarItem.warningBackground");
-    }
 }
 
 async function annotateAIBlock(
     document: vscode.TextDocument,
-    insertedText: string
+    insertedText: string,
+    employeeId: string
 ) {
+
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
 
-    if (insertedText.includes("AI_ASSISTED")) return;
-
-    const employeeId = getEmployeeId();
     const style = getCommentStyle(document.languageId);
 
     let startBlock = "";
@@ -137,63 +83,99 @@ async function annotateAIBlock(
 
         startBlock =
 `${style.blockStart}
-  AI_ASSISTED: true
-  AI_TOOL: GitHub Copilot
-  EMPLOYEE_ID: ${employeeId}
+AI_ASSISTED: true | DEVELOPERS: ${employeeId} | LAST_MODIFIED_BY: ${employeeId}
 ${style.blockEnd}
 
 `;
 
-        endBlock =
-`\n${style.blockStart} AI_ASSISTED_END ${style.blockEnd}\n`;
+        endBlock = `\n${style.blockStart} AI_ASSISTED_END ${style.blockEnd}\n`;
 
     } else {
 
         startBlock =
-`${style.linePrefix} AI_ASSISTED: true
-${style.linePrefix} AI_TOOL: GitHub Copilot
-${style.linePrefix} EMPLOYEE_ID: ${employeeId}
+`${style.linePrefix} AI_ASSISTED: true | DEVELOPERS: ${employeeId} | LAST_MODIFIED_BY: ${employeeId}
 
 `;
 
         endBlock =
 `\n${style.linePrefix} AI_ASSISTED_END\n`;
+
     }
 
     const fullText = document.getText();
+
     const index = fullText.indexOf(insertedText);
+
     if (index === -1) return;
 
     const startPos = document.positionAt(index);
     const endPos = document.positionAt(index + insertedText.length);
 
     await editor.edit(editBuilder => {
+
         editBuilder.insert(startPos, startBlock);
         editBuilder.insert(endPos, endBlock);
+
     });
 
-    vscode.window.showInformationMessage("AI Code Annotated");
+}
+
+function updateAIPercentage(document: vscode.TextDocument) {
+
+    const text = document.getText();
+    const lines = text.split("\n");
+
+    let aiLines = 0;
+    let insideAI = false;
+
+    for (const line of lines) {
+
+        if (line.includes("AI_ASSISTED: true")) {
+            insideAI = true;
+            continue;
+        }
+
+        if (line.includes("AI_ASSISTED_END")) {
+            insideAI = false;
+            continue;
+        }
+
+        if (insideAI) aiLines++;
+
+    }
+
+    const total = lines.length;
+
+    const percent = Math.round((aiLines / total) * 100);
+
+    statusBarItem.text = `AI Annotator (${percent}% AI)`;
+
 }
 
 function getEmployeeId(): string {
 
     const folders = vscode.workspace.workspaceFolders;
+
     if (!folders) return "UNKNOWN";
 
     for (const folder of folders) {
+
         const envPath = path.join(folder.uri.fsPath, ".env");
 
         if (fs.existsSync(envPath)) {
+
             const content = fs.readFileSync(envPath, "utf-8");
+
             const match = content.match(/EMPLOYEE_ID\s*=\s*(.*)/);
 
-            if (match && match[1]) {
-                return match[1].trim();
-            }
+            if (match && match[1]) return match[1].trim();
+
         }
+
     }
 
     return "UNKNOWN";
+
 }
 
 export function deactivate() {}

@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getCommentStyle = getCommentStyle;
 const COMMENT_STYLES = {
-    // C-style languages
     javascript: { linePrefix: "//" },
     typescript: { linePrefix: "//" },
     javascriptreact: { linePrefix: "//" },
@@ -17,33 +16,15 @@ const COMMENT_STYLES = {
     kotlin: { linePrefix: "//" },
     dart: { linePrefix: "//" },
     php: { linePrefix: "//" },
-    scala: { linePrefix: "//" },
-    // Hash-style
     python: { linePrefix: "#" },
     ruby: { linePrefix: "#" },
     shellscript: { linePrefix: "#" },
     bash: { linePrefix: "#" },
     yaml: { linePrefix: "#" },
-    dockerfile: { linePrefix: "#" },
-    powershell: { linePrefix: "#" },
-    r: { linePrefix: "#" },
-    // Dash-style
     sql: { linePrefix: "--" },
-    lua: { linePrefix: "--" },
-    haskell: { linePrefix: "--" },
-    // Block comment languages
     html: { blockStart: "<!--", blockEnd: "-->" },
     xml: { blockStart: "<!--", blockEnd: "-->" },
-    svg: { blockStart: "<!--", blockEnd: "-->" },
-    css: { blockStart: "/*", blockEnd: "*/" },
-    // Others
-    scss: { linePrefix: "//" },
-    less: { linePrefix: "//" },
-    matlab: { linePrefix: "%" },
-    latex: { linePrefix: "%" },
-    erlang: { linePrefix: "%" },
-    fortran: { linePrefix: "!" },
-    vb: { linePrefix: "'" }
+    css: { blockStart: "/*", blockEnd: "*/" }
 };
 const DEFAULT_STYLE = { linePrefix: "//" };
 function getCommentStyle(languageId) {

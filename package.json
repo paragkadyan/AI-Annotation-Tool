@@ -14,10 +14,10 @@
   ],
 
   "activationEvents": [
-    "*",
-    "onCommand:aiAnnotator.toggle",
-    "onCommand:aiAnnotator.forceAnnotate"
-  ],
+  "onStartupFinished",
+  "onCommand:aiAnnotator.toggle",
+  "onCommand:aiAnnotator.forceAnnotate"
+],
 
   "main": "./out/extension.js",
 
