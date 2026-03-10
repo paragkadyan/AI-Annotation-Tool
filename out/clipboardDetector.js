@@ -3,8 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ClipboardDetector = void 0;
 const vscode = require("vscode");
 class ClipboardDetector {
-    lastClipboard = '';
     constructor() {
+        this.lastClipboard = '';
         setInterval(async () => {
             try {
                 this.lastClipboard = await vscode.env.clipboard.readText();

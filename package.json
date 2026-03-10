@@ -1,47 +1,29 @@
 {
   "name": "ai-code-annotator",
   "displayName": "AI Code Annotator",
-  "description": "Detect and annotate AI generated code in VS Code",
   "version": "1.0.0",
-  "publisher": "ai-annotator",
   "engines": {
     "vscode": "^1.85.0"
   },
-
-  "categories": [
-    "Other",
-    "Programming Languages"
-  ],
-
   "activationEvents": [
-  "onStartupFinished",
-  "onCommand:aiAnnotator.toggle",
-  "onCommand:aiAnnotator.forceAnnotate"
-],
-
+    "onStartupFinished",
+    "onCommand:aiAnnotator.toggle"
+  ],
   "main": "./out/extension.js",
-
   "contributes": {
     "commands": [
       {
         "command": "aiAnnotator.toggle",
         "title": "AI Annotator Toggle"
-      },
-      {
-        "command": "aiAnnotator.forceAnnotate",
-        "title": "AI Annotator Force Annotate"
       }
     ]
   },
-
   "scripts": {
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "compile": "tsc -p ./"
   },
-
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.0"
   }
 }

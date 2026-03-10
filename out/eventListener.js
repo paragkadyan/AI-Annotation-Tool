@@ -3,9 +3,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.EventListener = void 0;
 const vscode = require("vscode");
 class EventListener {
-    engine;
-    clipboard;
-    disposable;
     constructor(engine, clipboard) {
         this.engine = engine;
         this.clipboard = clipboard;

@@ -1,11 +1,10 @@
 {
   "compilerOptions": {
     "module": "commonjs",
-    "target": "ES2022",
+    "target": "es2020",
     "outDir": "out",
     "rootDir": "src",
-    "strict": true,
+    "strict": false,
     "sourceMap": true
-  },
-  "include": ["src/**/*"]
+  }
 }
