@@ -44,6 +44,25 @@ export async function applyAnnotation(document: vscode.TextDocument, range: vsco
     const fullText = document.getText();
 
     try {
+
+        if (fullText.includes("###AI_EDITED")) {
+            const editRegex = /###\s*AI_EDITED\s*\|\s*DATA:\s*(.*?)\s*###/gi;
+            let match;
+            while ((match = editRegex.exec(fullText)) !== null) {
+                let metadata = match[1].trim();
+                const currentUserStamp = `${empId} (${date})`;
+                
+                let updatedMeta = metadata.includes(currentUserStamp) ? metadata 
+                                : metadata.includes("EditedBy:") ? `${metadata}, ${currentUserStamp}`
+                                : `${metadata} | EditedBy: ${currentUserStamp}`;
+
+                const finalHeader = `${s} >>> AI_START | ${updatedMeta}${e}`;
+                edit.replace(document.uri, new vscode.Range(document.positionAt(match.index), document.positionAt(match.index + match[0].length)), finalHeader);
+            }
+            await vscode.workspace.applyEdit(edit);
+            return;
+        }
+
         if (fullText.includes("###AI_GEN")) {
             const startRegex = /###\s*AI_GEN_START\s*###/gi;
             const endRegex = /###\s*AI_GEN_END\s*###/gi;
@@ -57,6 +76,8 @@ export async function applyAnnotation(document: vscode.TextDocument, range: vsco
             await vscode.workspace.applyEdit(edit);
             return;
         }
+
+        
 
         if (insertedText.length > 20 || insertedText.includes("#")) {
             let parentHeaderLine = -1;
@@ -138,7 +159,6 @@ function updateAICodePercentage(document: vscode.TextDocument) {
 
 export async function handleTextChange(event: vscode.TextDocumentChangeEvent) {
     const doc = event.document;
-    if (doc !== vscode.window.activeTextEditor?.document) return;
     if (isProcessing) return;
     
     if (event.reason === vscode.TextDocumentChangeReason.Undo || 
@@ -151,7 +171,7 @@ export async function handleTextChange(event: vscode.TextDocumentChangeEvent) {
     }
     const clipboard = await vscode.env.clipboard.readText();
     const fullText = doc.getText();
-    const hasMarkers = fullText.includes("###AI_GEN");
+    const hasMarkers = fullText.includes("###AI_GEN") || fullText.includes("###AI_EDITED");
 
     for (const change of event.contentChanges) {
         const text = change.text;
@@ -172,6 +192,8 @@ export async function handleTextChange(event: vscode.TextDocumentChangeEvent) {
 
         if (text.includes(">>> AI_START") || text.includes("<<< AI_END")) continue;
 
+        if (doc !== vscode.window.activeTextEditor?.document) return;
+        
         if (text.length > 20 || text.includes("#")) {
             if (log) log.appendLine(`[TRIGGER] Tab or Manual change detected.`);
             if (debounceTimer) clearTimeout(debounceTimer);
@@ -196,16 +218,50 @@ async function createInstructionFile() {
 
     const instructionMarker = "###AI_GEN_START###";
     const endMarker = "###AI_GEN_END###";
-    const newContent = `\n\n# AI Annotator Handshake\n` +
-    `CRITICAL RULES for Code Generation:\n` +
-    `1. You MUST wrap every new code block with these markers:\n` +
-    `   ${instructionMarker}\n` +
-    `   [Your code here]\n` +
-    `   ${endMarker}\n\n` +
-    `2. ANTI-NESTING RULE: Never insert markers inside an existing annotated block.\n` +
-    `   - BAD: ${instructionMarker} ... ${instructionMarker} code ${endMarker} ... ${endMarker}\n` +
-    `   - GOOD: Replace the existing block or start a new one entirely outside of it.\n\n` +
-    `3. Do not include these instructions in the code output itself.`;
+    const newContent = `
+# AI Annotator Handshake
+
+CRITICAL RULES:
+1. MANDATORY: Use markers for ALL changes, even 1-line fixes.
+2. NO NESTING: Never put a new start marker INSIDE an existing block without replacing the old one.
+3. DATA INTEGRITY: In CASE 2, 3, and 4, the "DATA:" field MUST contain everything after "AI_START |" exactly as it appears.
+
+## CASE 1: NEW CODE GENERATION
+Use if there are NO existing markers.
+###AI_GEN_START###
+[New Code]
+###AI_GEN_END###
+
+---
+
+## CASE 2: EDITING AN ORIGINAL BLOCK (One ID)
+Replace the Input with Output.
+Input: >>> AI_START | ID: 111 | 01-01-2026
+Output: 
+###AI_EDITED | DATA: ID: 111 | 01-01-2026###
+[Modified Code]
+// <<< AI_END
+
+---
+
+## CASE 3: EDITING A BLOCK WITH ONE PREVIOUS EDITOR
+Replace the Input with Output.
+Input: >>> AI_START | ID: 111 | 01-01-2026 | EditedBy: 222 (02-01-2026)
+Output:
+###AI_EDITED | DATA: ID: 111 | 01-01-2026 | EditedBy: 222 (02-01-2026)###
+[Modified Code]
+// <<< AI_END
+
+---
+
+## CASE 4: EDITING A BLOCK WITH MULTIPLE PREVIOUS EDITORS
+Replace the Input with Output.
+Input: >>> AI_START | ID: 111 | 01-01-2026 | EditedBy: 222 (02-01-2026), 333 (03-01-2026)
+Output:
+###AI_EDITED | DATA: ID: 111 | 01-01-2026 | EditedBy: 222 (02-01-2026), 333 (03-01-2026)###
+[Modified Code]
+// <<< AI_END
+`;
     try {
         await vscode.workspace.fs.createDirectory(githubFolderUri);
         let finalBuffer: Uint8Array;
@@ -243,6 +299,20 @@ export async function activate(context: vscode.ExtensionContext) {
     
     log.show(true);
     log.appendLine("[INIT] AI Annotator Active.");
+
+    vscode.workspace.onDidCreateFiles((event) => {
+    for (const file of event.files) {
+        // When a file is created, we give it a moment to populate then check for markers
+        setTimeout(async () => {
+            const doc = await vscode.workspace.openTextDocument(file);
+            const text = doc.getText();
+            if (text.includes("###AI_GEN")) {
+                // Manually trigger applyAnnotation for the whole file
+                applyAnnotation(doc, new vscode.Range(0, 0, doc.lineCount, 0), text);
+            }
+        }, 1500); 
+    }
+});
 
     // 2. Setup Event Listeners
     // Switch Tabs
