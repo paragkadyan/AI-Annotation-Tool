@@ -194,7 +194,7 @@ export async function handleTextChange(event: vscode.TextDocumentChangeEvent) {
 
         if (doc !== vscode.window.activeTextEditor?.document) return;
         
-        if (text.length > 20 || text.includes("#")) {
+        if (text.length > 20) {
             if (log) log.appendLine(`[TRIGGER] Tab or Manual change detected.`);
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {

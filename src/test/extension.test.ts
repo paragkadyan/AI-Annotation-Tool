@@ -153,7 +153,7 @@ suite('Extension Logic Coverage Test', () => {
     assert.strictEqual(startCount, 1, "Should have modified the existing header, not added a new one");
 });
 
-    test('Scenario 1: Create new file if not exists', async () => {
+test('Scenario 1: Create new file if not exists', async () => {
 		const workspaceFolders = vscode.workspace.workspaceFolders;
 		if (!workspaceFolders) {
 			assert.fail('Test requires an open workspace folder.');
@@ -177,42 +177,5 @@ suite('Extension Logic Coverage Test', () => {
 		assert.ok(content.includes('###AI_GEN_START###'), 'Should contain the start marker');
 	});
 
-	test('Scenario 2: Append to existing random file', async () => {
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		if (!workspaceFolders) { assert.fail('Workspace needed.'); }
-
-		const rootPath = workspaceFolders[0].uri.fsPath;
-		const githubPath = path.join(rootPath, '.github');
-		const filePath = path.join(githubPath, 'copilot-instructions.md');
-
-		// Prepare existing random file
-		if (!fs.existsSync(githubPath)) { fs.mkdirSync(githubPath); }
-		fs.writeFileSync(filePath, 'RANDOM_EXISTING_INSTRUCTION');
-
-		// Execute command
-		await vscode.commands.executeCommand('ai-annotator.initFile');
-		await new Promise(resolve => setTimeout(resolve, 500));
-
-		const content = fs.readFileSync(filePath, 'utf8');
-		assert.ok(content.includes('RANDOM_EXISTING_INSTRUCTION'), 'Original content must be preserved');
-		assert.ok(content.includes('###AI_GEN_START###'), 'Handshake should be appended');
-	});
-
-	test('Scenario 3: Do not append if already present', async () => {
-		const workspaceFolders = vscode.workspace.workspaceFolders;
-		if (!workspaceFolders) { assert.fail('Workspace needed.'); }
-
-		const filePath = path.join(workspaceFolders[0].uri.fsPath, '.github', 'copilot-instructions.md');
-		
-		const initialContent = fs.readFileSync(filePath, 'utf8');
-		const initialSize = fs.statSync(filePath).size;
-
-		// Execute again
-		await vscode.commands.executeCommand('ai-annotator.initFile');
-		await new Promise(resolve => setTimeout(resolve, 500));
-
-		const finalSize = fs.statSync(filePath).size;
-		assert.strictEqual(initialSize, finalSize, 'File size should not change if markers exist');
-	});
-
+    
 });

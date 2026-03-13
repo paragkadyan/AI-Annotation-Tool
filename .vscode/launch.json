@@ -10,8 +10,9 @@
 			"type": "extensionHost",
 			"request": "launch",
 			"args": [
-				"--extensionDevelopmentPath=${workspaceFolder}",
-				"${workspaceFolder}/test-workspace"
+				"${workspaceFolder}/ai-auto-annotator/test-workspace",
+				"--extensionDevelopmentPath=${workspaceFolder}"
+				
 			],
 			"outFiles": [
 				"${workspaceFolder}/out/**/*.js"
