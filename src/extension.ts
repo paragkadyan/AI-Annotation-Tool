@@ -215,7 +215,7 @@ async function createInstructionFile() {
     const rootUri = workspaceFolders[0].uri;
     const githubFolderUri = vscode.Uri.joinPath(rootUri, '.github');
     const fileUri = vscode.Uri.joinPath(githubFolderUri, 'copilot-instructions.md');
-
+    
     const instructionMarker = "###AI_GEN_START###";
     const endMarker = "###AI_GEN_END###";
     const newContent = `
@@ -263,6 +263,7 @@ Output:
 // <<< AI_END
 `;
     try {
+        console.log(">>> [FUNC] Creating directory...");
         await vscode.workspace.fs.createDirectory(githubFolderUri);
         let finalBuffer: Uint8Array;
 
