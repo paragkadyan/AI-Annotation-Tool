@@ -1,8 +1,8 @@
 {
   "name": "ai-annotator",
   "displayName": "AI Annotator",
-  "description": "Enterprise AI Code Detection, Annotation, Tracking & Analytics Dashboard",
-  "version": "2.0.0",
+  "description": "Enterprise AI Code Detection, Annotation, Tracking, Policy Enforcement & Analytics",
+  "version": "3.0.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -19,12 +19,22 @@
       {
         "command": "ai.showReport",
         "title": "AI Annotator: Open Dashboard"
+      },
+      {
+        "command": "ai.installHook",
+        "title": "AI Annotator: Install Pre-commit Policy Hook"
+      },
+      {
+        "command": "ai.verifyAudit",
+        "title": "AI Annotator: Verify Audit Log Integrity"
       }
     ],
     "menus": {
       "commandPalette": [
         { "command": "ai.resetId" },
-        { "command": "ai.showReport" }
+        { "command": "ai.showReport" },
+        { "command": "ai.installHook" },
+        { "command": "ai.verifyAudit" }
       ]
     }
   },
